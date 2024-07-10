@@ -1,0 +1,199 @@
+<!doctype html>
+
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>WebGPU Life</title>
+  </head>
+  <body>
+    <canvas width="512" height="512"></canvas>
+    <!-- script tag의 type을 module로 설정하면 top level await를 사용할 수 있다. -->
+    <script type="module">
+      const canvas = document.querySelector("canvas");
+
+      // Your WebGPU code will begin here!
+
+      // WebGPU를 사용할 수 있는지 체크
+      // 사용할 수 없을 경우 error
+      if (!navigator.gpu) {
+        throw new Error("WebGPU not supported on this browser.");
+      }
+
+      // 사용이 가능할 경우 GPUAdapter 호출
+      const adapter = await navigator.gpu.requestAdapter();
+
+      // 적절한 adapter가 없을 경우 adapter가 null일 수 있음.
+      // 브라우저는 webgpu를 지원하나 gpu 하드웨어에서 지원하지 않는 경우
+      if (!adapter) {
+        throw new Error("No appropriate GPUAdapter found.");
+      }
+      
+      // GPU device 호출
+      const device = await adapter.requestDevice();
+      
+      // 캔버스 구성
+      // device에서 canvas를 사용하도록 설정
+      // canvas 초기화 -> GPUCanvasContext를 요청
+      const context = canvas.getContext("webgpu");
+      const canvasFormat = navigator.gpu.getPreferredCanvasFormat();
+
+      // context를 configure method를 통해 device와 연결
+      // context를 사용할 device와 context에서 사용해야하는 texture 형식인 format을 설정
+      context.configure({
+        device: device,
+        format: canvasFormat,
+      });
+      
+      // GPU 명령을 기록하기 위한 interface
+      const encoder = device.createCommandEncoder();
+      
+      // vertex 설정
+      const vertices = new Float32Array([
+      //   X,    Y,
+        -0.8, -0.8, // Triangle 1 (Blue)
+         0.8, -0.8,
+         0.8,  0.8,
+      
+        -0.8, -0.8, // Triangle 2 (Red)
+         0.8,  0.8,
+        -0.8,  0.8,
+      ]);
+      
+      // Vertex buffer 생성
+      /*
+      label - 식별을 위한 임의의 문자열
+      size - 버퍼 크기, vertices의 바이트 크기
+      usage - 버퍼의 사용처, 아래 코드에서는 VERTEX로 사용할 것이고,
+              Destination, 여기서는 Vertex에 복사해 사용할 것임을 명시
+      
+      GPUBuffer를 만든 이후에는 속성들을 변경할 수 없으나, memory 값은 변경 가능.
+      처음 생성되면 0으로 초기화
+      */
+      const vertexBuffer = device.createBuffer({
+        label: "Cell vertices",
+        size: vertices.byteLength,
+        usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+      });
+
+      
+      // 위에서 생성한 VertexBuffer에 vertices 값을 복사
+      device.queue.writeBuffer(vertexBuffer, /*bufferOffset=*/0, vertices);
+
+      // Vertex layout 정의
+      /*
+      1. VertexBuffer는 GPU에게 그저 데이터 배열일 뿐이라 데이터 구조에 대한 추가적인 정보를 줘야함
+      2. arrayStride - vertex 마다의 stride. 각 값의 바이트 수라고 생각하면 됨.
+                       여기서는 x, y가 float 값으로 4바이트씩 총 8바이트이니 8.
+      3. attributes - vertex로 인코딩된 정보.
+                      * format - vertex data의 유형을 설명, vertex 데이터가 uint8 4개라면 uint8x4로 표기.
+                      * offset - 특정 속성이 시작되는 vertex에 포함된 바이트 수.
+                      * ShaderLocation - 0~15사이의 숫자이며, 모든 속성에 대해 고유해야함.
+                                         VertexShader의 입력에 연결.
+      */
+      const vertexBufferLayout = {
+        arrayStride: 8,
+        attributes: [{
+          format: "float32x2",
+          offset: 0,
+          shaderLocation: 0, // Position, see vertex shader
+        }],
+      };
+
+      
+      //Shader 코드 정의 - WGSL
+      /*
+      VertexShader
+      1. 함수에서 -> 는 반환이 있다는 뜻. builtin(val) vec4f 이면 vec4f의 값 val을 반환해야 함.
+      2. @location - layout에서 정의한 shaderLocation에서 지정한 번호로 값을 받아온다는 뜻으로,
+                    아래 코드에서는 shaderLocation 0에 데이터를 받겠다는 뜻.
+                    위에서 vertexBufferLayout의 shaderLocation을 0으로 설정했으니
+                    vertexBuffer의 값이 pos로 들어올 것.
+      3. return 값은 (x, y, z, w)의 구조로, vertex의 위치
+
+      FragmentShader
+      1. beginRenderPass의 colorAttachment를 나타내려면 반환값에 @location을 제공해야 함.
+         attachment가 하나 뿐이니 0.
+      2. return 값은 (r, g, b, a)의 구조로, fragment, 즉 pixel의 색
+      */
+      const cellShaderModule = device.createShaderModule({
+        label: 'Cell shader',
+        code: `
+          @vertex
+          fn vertexMain(@location(0) pos: vec2f) ->
+            @builtin(position) vec4f {
+            // return vec4f(pos.x, pos.y, 0, 1);의 표기를 아래와 같이 축약할 수 있음.
+            return vec4f(pos, 0, 1); // (X, Y, Z, W)
+          }
+      
+          @fragment
+          fn fragmentMain() -> @location(0) vec4f {
+            return vec4f(1, 0, 0, 1); // (R, G, B, A)
+          }
+        `
+      });
+
+      // Rendering Pipeline 정의
+      /*
+      layout - 모든 파이프라인에는 입력 유형을 정의하는 layout이 필요하지만 실제로는 없음.
+               지금은 auto를 통해 shader에서 자동으로 지정.
+      
+               vertex - vertex shader의 세부 정보
+               * entrypoint - 호춣할 함수 이름
+      
+      fragment - fragment shader의 세부 정보
+                 * targets - 파이프라인이 출력되는 color attachment의 정보.
+
+      */
+      const cellPipeline = device.createRenderPipeline({
+        label: "Cell pipeline",
+        layout: "auto",
+        vertex: {
+          module: cellShaderModule,
+          entryPoint: "vertexMain",
+          buffers: [vertexBufferLayout]
+        },
+        fragment: {
+          module: cellShaderModule,
+          entryPoint: "fragmentMain",
+          targets: [{
+            format: canvasFormat
+          }]
+        }
+      });
+
+
+      // rendering pass - 그리기 작업의 시작
+      const pass = encoder.beginRenderPass({
+        colorAttachments: [{
+            // getCurrentTexture() - canvas의 texture를 가져온다.
+            // createView() - 전체 텍스처를 활용해 view를 생성
+            view: context.getCurrentTexture().createView(),
+            // clear이면 render pass가 시작될 때 texture를 clearing
+            loadOp: "clear",
+            // 어떤 색으로 canvas를 clearing 할지 지정
+            clearValue: {r: 0, g: 0.5, b: 0.4, a: 1},
+            // store이면 render pass가 완료되면 render pass 중에 그려진 결과를 texture에 저장
+            storeOp: "store"
+        }]
+      });
+      
+      // 정사각형 그리기
+      /*
+      setPipeline - 그리는 데 사용해야 하는 파이프라인 설정
+      setVertexBuffer - idx번째 index에 vertexBuffer를 넘김. 
+                        idx는 cellPipeline의 vertex.buffers의 index
+      draw - 렌더링할 vertex의 수를 넘기고 그 vertex들을 그린다.
+      */
+      pass.setPipeline(cellPipeline);
+      pass.setVertexBuffer(0, vertexBuffer);
+      pass.draw(vertices.length / 2); // 6 vertices
+
+      // 종료 명령어를 기록, 여기서는 어떠한 동작도 하지 않음
+      pass.end();
+    
+      // queue 사용해 GPU에 명령어 버퍼를 제출
+      device.queue.submit([encoder.finish()]);
+
+    </script>
+  </body>
+</html>
