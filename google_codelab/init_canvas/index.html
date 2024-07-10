@@ -1,0 +1,73 @@
+<!doctype html>
+
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>WebGPU Life</title>
+  </head>
+  <body>
+    <canvas width="512" height="512"></canvas>
+    <!-- script tag의 type을 module로 설정하면 top level await를 사용할 수 있다. -->
+    <script type="module">
+      const canvas = document.querySelector("canvas");
+
+      // Your WebGPU code will begin here!
+
+      // WebGPU를 사용할 수 있는지 체크
+      // 사용할 수 없을 경우 error
+      if (!navigator.gpu) {
+        throw new Error("WebGPU not supported on this browser.");
+      }
+
+      // 사용이 가능할 경우 GPUAdapter 호출
+      const adapter = await navigator.gpu.requestAdapter();
+
+      // 적절한 adapter가 없을 경우 adapter가 null일 수 있음.
+      // 브라우저는 webgpu를 지원하나 gpu 하드웨어에서 지원하지 않는 경우
+      if (!adapter) {
+        throw new Error("No appropriate GPUAdapter found.");
+      }
+      
+      // GPU device 호출
+      const device = await adapter.requestDevice();
+      
+      // 캔버스 구성
+      // device에서 canvas를 사용하도록 설정
+      // canvas 초기화 -> GPUCanvasContext를 요청
+      const context = canvas.getContext("webgpu");
+      const canvasFormat = navigator.gpu.getPreferredCanvasFormat();
+
+      // context를 configure method를 통해 device와 연결
+      // context를 사용할 device와 context에서 사용해야하는 texture 형식인 format을 설정
+      context.configure({
+        device: device,
+        format: canvasFormat,
+      });
+      
+      // GPU 명령을 기록하기 위한 interface
+      const encoder = device.createCommandEncoder();
+
+      // rendering pass - 그리기 작업의 시작
+      const pass = encoder.beginRenderPass({
+        colorAttachments: [{
+            // getCurrentTexture() - canvas의 texture를 가져온다.
+            // createView() - 전체 텍스처를 활용해 view를 생성
+            view: context.getCurrentTexture().createView(),
+            // clear이면 render pass가 시작될 때 texture를 clearing
+            loadOp: "clear",
+            // 어떤 색으로 canvas를 clearing 할지 지정
+            clearValue: {r: 0, g: 0.5, b: 0.4, a: 1},
+            // store이면 render pass가 완료되면 render pass 중에 그려진 결과를 texture에 저장
+            storeOp: "store"
+        }]
+      });
+
+      // 종료 명령어를 기록, 여기서는 어떠한 동작도 하지 않음
+      pass.end();
+    
+      // queue 사용해 GPU에 명령어 버퍼를 제출
+      device.queue.submit([encoder.finish()]);
+
+    </script>
+  </body>
+</html>
